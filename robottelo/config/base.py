@@ -1357,6 +1357,7 @@ class Settings(object):
                 'saucelabs_user': self.saucelabs_user,
                 'screenshots_path': self.screenshots_path,
                 'webdriver': self.webdriver,
+                'command_executor': self.command_executor,
                 'webdriver_binary': self.webdriver_binary,
             },
             'webdriver_desired_capabilities': (
