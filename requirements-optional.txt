@@ -6,6 +6,9 @@ pytest-xdist
 redis
 tox
 
+# for running end_to_end tests using steps
+pytest-steps
+
 # Voluntary (recommended!) tool for checking code quality.
 pylint
 

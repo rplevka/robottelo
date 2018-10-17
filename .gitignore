@@ -16,7 +16,7 @@
 /dist/
 
 # Test results.
-/docs/robottelo.log
+robottelo*.log
 /foreman-results.xml
 /robottelo.log
 /robottelo_gw*.log
