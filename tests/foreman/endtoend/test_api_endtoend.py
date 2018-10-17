@@ -30,6 +30,7 @@ from robottelo.api.utils import (
     promote,
     wait_for_tasks,
 )
+from robottelo.decorators import skip_if_not_set
 from robottelo.config import settings
 from robottelo.constants import (
     DEFAULT_LOC,
@@ -47,7 +48,9 @@ from robottelo.decorators import (
     setting_is_set,
     skip_if_not_set,
 )
+from robottelo.cli.factory import make_job_invocation
 from robottelo.helpers import get_nailgun_config
+from robottelo.cli.job_invocation import JobInvocation
 from robottelo.test import TestCase
 from six.moves import http_client
 from time import sleep
@@ -1078,6 +1081,7 @@ def user_credentials(state):
     return server_config
 
 
+@skip_if_not_set('vlan_networking')
 @pytest.mark.dependency(name='test_e2e_phase_1')
 @test_steps('create_org', 'create_loc', 'clone_role', 'create_user', 'create_subnet')
 def test_e2e_phase_1(state):
@@ -1120,18 +1124,18 @@ def test_e2e_phase_1(state):
     # step 2.17: Create a new subnet
     with optional_step('create_subnet') as create_subnet:
         subnet_name = gen_string('alpha')
+        capsule = entities.SmartProxy(id=1)
         dom = entities.Domain(id=1).read()
         dom.organization = [org]
         dom.location = [loc]
-        dom = dom.update(['organization', 'location'])
-        # FIXME - the provisioning network parameters should configurable (properties file perhaps?)
-        capsule = entities.SmartProxy(id=1)
+        dom.dns = capsule
+        dom = dom.update(['dns', 'organization', 'location'])
+        # FIXME - the provisioning network parameters should be configurable (properties file perhaps?)
         subnet = entities.Subnet(
             server_config,
             name=subnet_name,
             location=[loc],
             organization=[org],
-            #ipam='DHCP',
             ipam=settings.vlan_networking.dhcp_ipam,
             network=settings.vlan_networking.subnet,
             gateway=settings.vlan_networking.gateway,
@@ -1142,7 +1146,7 @@ def test_e2e_phase_1(state):
             domain=[dom],
             # assign the internal capsule to the features
             discovery=capsule,
-            #dhcp=capsule,
+            dhcp=capsule,
             dns=capsule,
             template=capsule,
             tftp=capsule,
@@ -1464,11 +1468,10 @@ def test_e2e_phase_2(state, foreman_only):
                 'hostgroup': hg,
                 'mac': gen_mac(multicast=False),
                 'subnet': state['subnet'],
-                # FIXME parametrize the network name
                 'interfaces_attributes': [
                     {
                         "compute_attributes": {
-                            "network": "provision",
+                            "network": "{0}".format(settings.vlan_networking.network),
                             "type": "network",
                             "provision": True,
                             "managed": True
@@ -1559,18 +1562,15 @@ def test_e2e_phase_2(state, foreman_only):
 
 
 @pytest.mark.dependency(depends=['test_e2e_phase_2'], name='test_e2e_phase_3')
-@test_steps('katello', 'provision_host')
+@test_steps('provision_host')
 def test_e2e_phase_3(state, foreman_only):
-    """Perform tests on managed host"""
+    """Verify the host got provisioned properly
+    This is a standalone phase so we use the time needed to provision a host to run provisioning
+    tests for other parameters
+    """
     org = state['org']
     loc = state['loc']
     host = state['host'][foreman_only].read()
-
-    with optional_step('katello') as katello:
-        if foreman_only:
-            pytest.skip("katello environment not configured")
-    yield katello
-
     with optional_step('provision_host') as provision_host:
         provisioning_timeout = 1800
         poll_interval = 10
@@ -1587,3 +1587,43 @@ def test_e2e_phase_3(state, foreman_only):
             'Failed to provision host in a specified timeout: {0}s'.format(
                 provisioning_timeout)
     yield provision_host
+
+
+@pytest.mark.dependency(depends=['test_e2e_phase_3'], name='test_e2e_phase_4')
+@pytest.mark.parametrize('rex', ['ssh', 'ansible'])
+@test_steps('invoke_rex_command')
+def test_e2e_phase_4(state, foreman_only, rex):
+    """Test managed host features"""
+    org = state['org']
+    loc = state['loc']
+    host = state['host'][foreman_only].read()
+
+    with optional_step('invoke_rex_command') as invoke_rex_command:
+        # this might get some timeout before the pprovisioned host is properly booted up
+        job_category = 'Commands' if rex == 'ssh' else 'Ansible Commands'
+        # get the appropriate job template
+        templates = entities.JobTemplate().search(
+            query={"search": "name~command and job_category~{0}".format(job_category)}
+        )
+        assert len(templates) > 0, 'API returned 0 command job templates'
+        template = templates[0].read()
+
+        # FIXME - creating of job invocations with nailgun is not yet supported, using hammer instead
+        invocation_command = make_job_invocation({
+            'job-template': template.name,
+            'inputs': 'command="ls"',
+            'search-query': "name ~ {0}".format(host.name),
+        })
+        try:
+            assert invocation_command['success'] == u'1'
+        except AssertionError:
+            result = 'host output: {0}'.format(
+                ' '.join(JobInvocation.get_output({
+                    'id': invocation_command[u'id'],
+                    'host': self.client.hostname})
+                    )
+                )
+            raise AssertionError(result)
+
+    yield invoke_rex_command
+
