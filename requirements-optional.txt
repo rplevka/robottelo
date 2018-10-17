@@ -1,7 +1,10 @@
 # For running tests and checking code quality using these modules.
 codecov
 flake8
+python-libvirt
 pytest-cov
+pytest-dependency
+pytest-steps
 pytest-xdist
 redis
 tox

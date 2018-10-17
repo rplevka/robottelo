@@ -15,18 +15,20 @@
 
 :Upstream: No
 """
+import libvirt
 import pytest
 import random
 
 from fauxfactory import gen_string, gen_mac
 from os import environ
 from pytest_steps import test_steps, optional_step
+from math import ceil
 from nailgun import client, entities
 from robottelo import manifests
 from robottelo.api.utils import (
     enable_rhrepo_and_fetchid,
     promote,
-    upload_manifest,
+    wait_for_tasks,
 )
 from robottelo.config import settings
 from robottelo.constants import (
@@ -48,6 +50,7 @@ from robottelo.decorators import (
 from robottelo.helpers import get_nailgun_config
 from robottelo.test import TestCase
 from six.moves import http_client
+from time import sleep
 from .utils import AK_CONTENT_LABEL, ClientProvisioningMixin
 # (too many public methods) pylint: disable=R0904
 
@@ -1059,7 +1062,7 @@ class EndToEndTestCase(TestCase, ClientProvisioningMixin):
 
 @pytest.fixture(scope='session')
 def state():
-    return {}
+    return {"host": {}}
 
 
 @pytest.fixture(scope='session')
@@ -1075,35 +1078,41 @@ def user_credentials(state):
     return server_config
 
 
-@pytest.fixture(scope='session')
-def org(state, user_credentials):
-    org = entities.Organization(user_credentials).create()
-    return {'org': org,
-            'server_config': user_credentials,
-            }
-
-
-@test_steps('create_user', 'create_org', 'create_loc', 'create_subnet')
+@pytest.mark.dependency(name='test_e2e_phase_1')
+@test_steps('create_org', 'create_loc', 'clone_role', 'create_user', 'create_subnet')
 def test_e2e_phase_1(state):
+    # Create new org
+    proxy = entities.SmartProxy(id=1).read()
+    org = entities.Organization(smart_proxy=[proxy]).create()
+    state.setdefault('org', org)
+    yield
+    # Create new locaction
+    loc = entities.Location(smart_proxy=[proxy]).create()
+    state.setdefault('loc', loc)
+    yield
+    # let's clone the org_admin role
+    default_org_admin = entities.Role().search(
+        query={'search': u'name="Organization admin"'})
+    org_admin = entities.Role(id=default_org_admin[0].id).clone(
+        data={
+            'role': {
+                'name': 'manager_{0}'.format(org.name),
+                'organization_ids': [org.id],
+                'location_ids': [loc.id]
+            }
+        }
+    )
+    yield
     # Create a new user with admin permissions
     login = gen_string('alphanumeric')
     password = gen_string('alphanumeric')
     user = entities.User(
-        admin=True, login=login, password=password
+        admin=False, login=login, password=password, role=[org_admin['id']], organization=[org], location=[loc]
     ).create()
     yield
     server_config = get_nailgun_config()
     server_config.auth = (login, password)
     state.setdefault('server_config', server_config)
-    proxy = entities.SmartProxy(id=1).read()
-    # Create new org
-    org = entities.Organization(server_config, smart_proxy=[proxy]).create()
-    state.setdefault('org', org)
-    yield
-    # Create new locaction
-    loc = entities.Location(server_config, smart_proxy=[proxy]).create()
-    state.setdefault('loc', loc)
-    yield
     # assign the loc to the org
     loc.organization = [org]
     loc.update(['organization'])
@@ -1111,7 +1120,7 @@ def test_e2e_phase_1(state):
     # step 2.17: Create a new subnet
     with optional_step('create_subnet') as create_subnet:
         subnet_name = gen_string('alpha')
-        dom = entities.Domain(server_config, id=1).read()
+        dom = entities.Domain(id=1).read()
         dom.organization = [org]
         dom.location = [loc]
         dom = dom.update(['organization', 'location'])
@@ -1122,17 +1131,18 @@ def test_e2e_phase_1(state):
             name=subnet_name,
             location=[loc],
             organization=[org],
-            ipam='DHCP',
-            network='192.168.100.0',
-            gateway='192.168.100.1',
-            from_='192.168.100.3',
-            to='192.168.100.253',
-            mask='255.255.255.0',
-            dns_primary='192.168.100.2',
+            #ipam='DHCP',
+            ipam=settings.vlan_networking.dhcp_ipam,
+            network=settings.vlan_networking.subnet,
+            gateway=settings.vlan_networking.gateway,
+            from_=settings.vlan_networking.dhcp_from,
+            to=settings.vlan_networking.dhcp_to,
+            mask=settings.vlan_networking.netmask,
+            dns_primary=settings.vlan_networking.dns_primary,
             domain=[dom],
             # assign the internal capsule to the features
             discovery=capsule,
-            dhcp=capsule,
+            #dhcp=capsule,
             dns=capsule,
             template=capsule,
             tftp=capsule,
@@ -1143,12 +1153,13 @@ def test_e2e_phase_1(state):
     yield create_subnet
 
 
+@pytest.mark.dependency(depends=["test_e2e_phase_1"], name='test_e2e_phase_2')
 @test_steps('katello', 'manifest_upload', 'create_lce', 'create_product',
             'create_YUM_repo', 'create_PUPPET_repo', 'create_OS_repo',
             'enable_RH_repo', 'sync_repos', 'create_RH_cv',
             'publish_promote_cv', 'create_ak', 'create_hostgroup',
             'create_compute_resource', 'create_host')
-def test_e2e_phase2(state, foreman_only):
+def test_e2e_phase_2(state, foreman_only):
     """Perform end to end smoke tests using RH and custom repos.
 
     1. Using the new user and org:
@@ -1174,11 +1185,11 @@ def test_e2e_phase2(state, foreman_only):
 
     :id: b2f73740-d3ce-4e6e-abc7-b23e5562bac1
 
-    :expectedresults: All tests should succeed and Content should be
+    :expectedresults: All steps should succeed and Content should be
         successfully fetched by client.
     """
     org = state['org']
-    loc = state['loc']
+    sc = state['server_config']
     # step 2.1.1: Is katello configured?
     with optional_step('katello') as katello:
         if foreman_only:
@@ -1192,13 +1203,22 @@ def test_e2e_phase2(state, foreman_only):
                 pytest.skip("CDN manifest not configured")
             else:
                 with manifests.clone() as manifest:
-                    upload_manifest(org.id, manifest.content)
+                    #upload_manifest(org.id, manifest.content)
+                    upload_task = entities.Subscription(sc).upload(
+                        sc,
+                        data={'organization_id': org.id},
+                        files={'content': manifest.content},
+                    )
+                    upload_task = wait_for_tasks(
+                        upload_task['id'], search_rate=5
+                    )
             state['org'] = org.read()
     yield manifest_upload
     # step 2.3: Create a new lifecycle environment
     with optional_step('create_lce', depends_on=katello) as create_lce:
         if create_lce.should_run():
             le1 = entities.LifecycleEnvironment(
+                sc,
                 organization=org
             ).create()
     yield create_lce
@@ -1206,7 +1226,7 @@ def test_e2e_phase2(state, foreman_only):
     # step 2.4: Create a custom product
     with optional_step('create_product', depends_on=katello) as create_prod:
         if create_prod.should_run():
-            prod = entities.Product(organization=org).create()
+            prod = entities.Product(sc, organization=org).create()
             repositories = []
     yield create_prod
 
@@ -1214,6 +1234,7 @@ def test_e2e_phase2(state, foreman_only):
     with optional_step('create_YUM_repo', depends_on=katello) as create_yum:
         if create_yum.should_run():
             repo1 = entities.Repository(
+                sc,
                 product=prod,
                 content_type=u'yum',
                 url=CUSTOM_RPM_REPO
@@ -1225,6 +1246,7 @@ def test_e2e_phase2(state, foreman_only):
     with optional_step('create_PUPPET_repo', depends_on=katello) as create_pup:
         if create_pup.should_run():
             repo2 = entities.Repository(
+                sc,
                 product=prod,
                 content_type=u'puppet',
                 url=FAKE_0_PUPPET_REPO
@@ -1239,9 +1261,9 @@ def test_e2e_phase2(state, foreman_only):
                 pytest.skip('using CDN OS repo since manifest is configured')
             else:
                 repo3 = entities.Repository(
+                    sc,
                     product=prod,
                     content_type=u'yum',
-                    #url=u'http://mirror.switch.ch/ftp/mirror/centos/7/os/x86_64/'
                     url=u'http://mirror.centos.org/centos/7/os/x86_64/'
                 ).create()
                 repositories.append(repo3)
@@ -1251,7 +1273,7 @@ def test_e2e_phase2(state, foreman_only):
     with optional_step('enable_RH_repo', depends_on=manifest_upload) as enable_repo:
         if enable_repo.should_run():
             if setting_is_set('fake_manifest'):
-                repo4 = entities.Repository(id=enable_rhrepo_and_fetchid(
+                repo4 = entities.Repository(sc, id=enable_rhrepo_and_fetchid(
                     basearch='x86_64',
                     org_id=org.id,
                     product=PRDS['rhel'],
@@ -1265,18 +1287,24 @@ def test_e2e_phase2(state, foreman_only):
     yield enable_repo
 
     # step 2.8: Synchronize the repositories
-    with optional_step('sync_repos', depends_on=katello) as sync_repos:
+    deps = [katello]
+    if setting_is_set('fake_manifest'):
+        deps.append(enable_repo)
+    with optional_step('sync_repos', depends_on=deps) as sync_repos:
         if sync_repos.should_run():
             for repo in repositories:
                 response = repo.sync(synchronous=False)
                 assert response['id']
+                # not passing 'sc' as this is not an object of the test
                 task = entities.ForemanTask(id=response['id']).poll(timeout=600)
     yield sync_repos
 
     # step 2.9: Create content view
-    with optional_step('create_RH_cv', depends_on=katello) as create_cv:
+    with optional_step('create_RH_cv', depends_on=[
+          katello, sync_repos]) as create_cv:
         if create_cv.should_run():
             content_view = entities.ContentView(
+                sc,
                 organization=org
             ).create()
 
@@ -1300,7 +1328,8 @@ def test_e2e_phase2(state, foreman_only):
                 "The name of the created puppet module differs."
     yield create_cv
 
-    with optional_step('publish_promote_cv', depends_on=katello) as publish_promote_cv:
+    with optional_step('publish_promote_cv', depends_on=[
+          katello, create_cv]) as publish_promote_cv:
         if publish_promote_cv.should_run():
             # step 2.12: Publish content view
             content_view.publish()
@@ -1317,37 +1346,44 @@ def test_e2e_phase2(state, foreman_only):
             cv_version = cv_version.read()
     yield publish_promote_cv
 
-    with optional_step('create_ak', depends_on=[katello, publish_promote_cv]) as create_ak:
+    with optional_step('create_ak', depends_on=[
+          katello, publish_promote_cv]) as create_ak:
         if create_ak.should_run():
             # step 2.14: Create a new activation key
             activation_key_name = gen_string('alpha')
             activation_key = entities.ActivationKey(
+                sc,
                 name=activation_key_name,
                 environment=le1,
                 organization=org,
                 content_view=content_view,
             ).create()
 
-            # step 2.15: Add the products to the activation key
-            for sub in entities.Subscription(organization=org).search():
-                if sub.read_json()['product_name'] == DEFAULT_SUBSCRIPTION_NAME:
-                    activation_key.add_subscriptions(data={
-                        'quantity': 1,
-                        'subscription_id': sub.id,
-                    })
-                    break
-            # step 2.15.1: Enable product content
-            if setting_is_set('fake_manifest'):
-                activation_key.content_override(data={'content_override': {
-                    u'content_label': AK_CONTENT_LABEL,
-                    u'value': u'1',
-                }})
+            # Add the subscription to the AK
+            subs = entities.Subscription(sc, organization=org).search(
+                query={"search": "name={0}".format(prod.name)}
+            )
+            assert(
+                len(subs) > 0,
+                'API expected to return exactly 1 subscription'
+            )
+            sub = subs[0]
+            activation_key.add_subscriptions(data={
+                'quantity': 1,
+                'subscription_id': sub.id
+            })
+            # Enable product content
+            activation_key.content_override(data={'content_override': {
+                u'content_label': prod.label,
+                u'value': u'1'
+            }})
     yield create_ak
 
     # step 2.19: Create a new hostgroup and associate previous entities to
     # it
     with optional_step('create_hostgroup') as create_hostgroup:
         hg = entities.HostGroup(
+            sc,
             name=gen_string('alpha'),
             location=[state['loc']],
             organization=[state['org']],
@@ -1363,6 +1399,7 @@ def test_e2e_phase2(state, foreman_only):
     with optional_step('create_compute_resource') as create_compute_resource:
         cr_hostname = settings.compute_resources.libvirt_hostname
         compresource = entities.LibvirtComputeResource(
+            sc,
             name=gen_string('alpha'),
             location=[state['loc']],
             organization=[state['org']],
@@ -1377,6 +1414,9 @@ def test_e2e_phase2(state, foreman_only):
     yield create_compute_resource
 
     # step 2.21: Provision a host
+    deps = [create_hostgroup, create_compute_resource]
+    if not foreman_only:
+        deps.append(publish_promote_cv)
     with optional_step(
         'create_host',
         depends_on=[
@@ -1426,18 +1466,25 @@ def test_e2e_phase2(state, foreman_only):
                 'subnet': state['subnet'],
                 # FIXME parametrize the network name
                 'interfaces_attributes': [
-                    {"compute_attributes": {
-                        "network": "provision","type": "network", "provision": True, "managed": True}
+                    {
+                        "compute_attributes": {
+                            "network": "provision",
+                            "type": "network",
+                            "provision": True,
+                            "managed": True
+                        }
                     },
                 ],
                 'compute_attributes': {
                     'start': '1',
-                    'volumes_attributes': {"0": {"poolname": "default", "capacity": "20G", "format_type": "raw"}},
+                    'volumes_attributes': {"0": {
+                        "poolname": "default", "capacity": "20G", "format_type": "raw"
+                    }},
                 },
                 'build': True,
             }
             if foreman_only:
-                # get the id of the CentOS Media
+                # get the id of the CentOS Media (http://mirror.centos.org/centos/$major/os/$arch)
                 media = entities.Media().search(
                     query={"search": "name~CentOS mirror"}
                 )
@@ -1450,8 +1497,7 @@ def test_e2e_phase2(state, foreman_only):
                 loc.update(['medium'])
                 # include medium id in the host.create params
                 parameters['medium'] = medium.id
-
-                parameters['name']: '{0}-{1}'.format('fmn', gen_string('alpha'))
+                parameters['name'] = '{0}-{1}'.format('fmn', gen_string('alpha'))
                 os = entities.OperatingSystem(
                     name='CentOS-{0}'.format(gen_string('alpha', 3)),
                     major=7,
@@ -1474,12 +1520,12 @@ def test_e2e_phase2(state, foreman_only):
                 assert len(oses) > 0, 'API returned 0 OS entities with required name: {0}'.format(osname)
                 os = oses[0]
                 parameters['content_facet_attributes'] = {
-                        'kickstart_repository_id': osrepo.id,
-                        'content_source_id': 1,
-                        'content_view_id': content_view.id,
-                        'lifecycle_environment_id': le1.id,
-                        'name': '{0}-{1}'.format('ktl', gen_string('alpha')),
+                    'kickstart_repository_id': osrepo.id,
+                    'content_source_id': 1,
+                    'content_view_id': content_view.id,
+                    'lifecycle_environment_id': le1.id,
                 }
+                parameters['name'] = '{0}-{1}'.format('ktl', gen_string('alpha'))
                 parameters['host_parameters_attributes'] = [{'name': 'kt_activation_keys', 'value': '{0}'.format(activation_key.name)}]
             ptables = entities.PartitionTable().search(query={"search": "name=\"Kickstart default\""})
             assert len(ptables) > 0, 'API returned 0 Kickstart default ptables'
@@ -1493,53 +1539,51 @@ def test_e2e_phase2(state, foreman_only):
             parameters['root_pass'] = 'changeme'
 
             # finally, create the host with all the params
-            host = entities.Host(**parameters).create(create_missing=False)
+            host = entities.Host(sc, **parameters).create(create_missing=False)
+
+            # let's make some assertions from the hypervisor
+            libvirt_conn = libvirt.openReadOnly('qemu+tcp://%s/system' % cr_hostname)
+            assert libvirt_conn is not None, 'Failed to connect to the libvirt hypervisor'
+            libvirt_doms = libvirt_conn.listAllDomains()
+            assert libvirt_doms is not None, 'Failed to fetch the libvirt domains (VMs)'
+            doms = [dom for dom in libvirt_doms if parameters['name'].lower() in dom.name()]
+            assert len(doms) == 1, \
+                'Hypervisor has {0} domains with {1} in name'.format(len(doms), parameters['name'])
+            vm = doms[0]
+            assert vm.isActive() == 1, 'Domain "{0}" is not powered on'.format(vm.name())
+
             state['org'] = org
             state['loc'] = loc
+            state['host'][foreman_only] = host
     yield create_host
 
-    '''command_args = [
-        'virt-install',
-        '--hvm',
-        '--pxe',
-        '--mac="{vm_mac}"',
-        '--name="{vm_name}"',
-        '--memory=512',
-        '--network={vm_nw}',
-        '--disk="path={image_name},size=8"',
-        '--boot=network',
-        '--graphics=vnc'
-    ]
-    # result = ssh.command()
-    yield
-    '''
 
-    '''
-    # BONUS: Create a content host and associate it with promoted
-    # content view and last lifecycle where it exists
-    content_host = entities.Host(
-        content_facet_attributes={
-            'content_view_id': content_view.id,
-            'lifecycle_environment_id': le1.id,
-        },
-        organization=org,
-    ).create()
-    # check that content view matches what we passed
-    assertEqual(
-        content_host.content_facet_attributes['content_view_id'],
-        content_view.id
-    )
-    # check that lifecycle environment matches
-    assertEqual(
-        content_host.content_facet_attributes['lifecycle_environment_id'],
-        le1.id
-    )
+@pytest.mark.dependency(depends=['test_e2e_phase_2'], name='test_e2e_phase_3')
+@test_steps('katello', 'provision_host')
+def test_e2e_phase_3(state, foreman_only):
+    """Perform tests on managed host"""
+    org = state['org']
+    loc = state['loc']
+    host = state['host'][foreman_only].read()
 
-    # step 2.16: Create a new libvirt compute resource
-    entities.LibvirtComputeResource(
-        server_config,
-        url=u'qemu+ssh://root@{0}/system'.format(
-            settings.compute_resources.libvirt_hostname
-        ),
-    ).create()
-    '''
+    with optional_step('katello') as katello:
+        if foreman_only:
+            pytest.skip("katello environment not configured")
+    yield katello
+
+    with optional_step('provision_host') as provision_host:
+        provisioning_timeout = 1800
+        poll_interval = 10
+
+        for i in range(ceil(provisioning_timeout/poll_interval)):
+            host = host.read()
+            if host.build_status_label != 'Pending installation':
+                assert host.build_status_label == 'Installed',\
+                    'Failed to provision host - status {0}'.format(
+                        host.build_status_label)
+                break
+            sleep(poll_interval)
+        assert host.build_status_label == 'Installed',\
+            'Failed to provision host in a specified timeout: {0}s'.format(
+                provisioning_timeout)
+    yield provision_host

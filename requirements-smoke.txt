@@ -1,0 +1,3 @@
+libvirt-python
+pytest-dependency
+pytest-steps
