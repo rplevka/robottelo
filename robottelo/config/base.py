@@ -1303,6 +1303,7 @@ class Settings(object):
                 'screenshots_path': self.screenshots_path,
                 'webdriver': self.webdriver,
                 'webdriver_binary': self.webdriver_binary,
+                'command_executor': self.command_executor,
             },
             'webdriver_desired_capabilities': (
                 self.webdriver_desired_capabilities or {}),
