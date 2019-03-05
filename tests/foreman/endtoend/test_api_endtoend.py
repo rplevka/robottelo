@@ -1456,7 +1456,8 @@ def test_e2e_phase_2(state, foreman_only):
                 archs[0].name == 'x86_64',
                 'Search returned invalid arch'
             )
-            # FIXME - clone the kickstart template and fix the bootloader timeout so we won't die waiting
+            # FIXME - clone the kickstart template and fix the bootloader timeout
+            # so we won't die waiting
             parameters = {
                 'architecture': archs[0],
                 'organization': org,
@@ -1519,8 +1520,12 @@ def test_e2e_phase_2(state, foreman_only):
                 else:
                     osrepo = repo4
                     osname = 'RedHat'
-                oses = entities.OperatingSystem().search(query={"search": "name={0}".format(osname)})
-                assert len(oses) > 0, 'API returned 0 OS entities with required name: {0}'.format(osname)
+                oses = entities.OperatingSystem().search(
+                    query={"search": "name={0}".format(osname)})
+                assert(
+                    len(oses) > 0,
+                    'API returned 0 OS entities with required name: {0}'.format(osname)
+                )
                 os = oses[0]
                 parameters['content_facet_attributes'] = {
                     'kickstart_repository_id': osrepo.id,
@@ -1529,8 +1534,12 @@ def test_e2e_phase_2(state, foreman_only):
                     'lifecycle_environment_id': le1.id,
                 }
                 parameters['name'] = '{0}-{1}'.format('ktl', gen_string('alpha'))
-                parameters['host_parameters_attributes'] = [{'name': 'kt_activation_keys', 'value': '{0}'.format(activation_key.name)}]
-            ptables = entities.PartitionTable().search(query={"search": "name=\"Kickstart default\""})
+                parameters['host_parameters_attributes'] = [
+                    {'name': 'kt_activation_keys', 'value': '{0}'.format(activation_key.name)}
+                ]
+            ptables = entities.PartitionTable().search(
+                query={"search": "name=\"Kickstart default\""}
+            )
             assert len(ptables) > 0, 'API returned 0 Kickstart default ptables'
             ptable = ptables[0].read()
             ptable.organization.append(org)
@@ -1551,7 +1560,8 @@ def test_e2e_phase_2(state, foreman_only):
             assert libvirt_doms is not None, 'Failed to fetch the libvirt domains (VMs)'
             doms = [dom for dom in libvirt_doms if parameters['name'].lower() in dom.name()]
             assert len(doms) == 1, \
-                'Hypervisor has {0} domains with {1} in name'.format(len(doms), parameters['name'])
+                'Hypervisor has {0} domains with {1} in name'.format(
+                    len(doms), parameters['name'])
             vm = doms[0]
             assert vm.isActive() == 1, 'Domain "{0}" is not powered on'.format(vm.name())
 
@@ -1608,7 +1618,8 @@ def test_e2e_phase_4(state, foreman_only, rex):
         assert len(templates) > 0, 'API returned 0 command job templates'
         template = templates[0].read()
 
-        # FIXME - creating of job invocations with nailgun is not yet supported, using hammer instead
+        # FIXME - creating of job invocations with nailgun is not yet
+        # supported, using hammer instead
         invocation_command = make_job_invocation({
             'job-template': template.name,
             'inputs': 'command="ls"',
@@ -1626,4 +1637,3 @@ def test_e2e_phase_4(state, foreman_only, rex):
             raise AssertionError(result)
 
     yield invoke_rex_command
-
