@@ -966,6 +966,7 @@ class VlanNetworkSettings(FeatureSettings):
         self.gateway = None
         self.bridge = None
         self.network = None
+        self.dhcp_ipam = None
         self.dhcp_from = None
         self.dhcp_to = None
         self.dns_primary = None
@@ -982,7 +983,6 @@ class VlanNetworkSettings(FeatureSettings):
         self.dhcp_to = reader.get('vlan_networking', 'dhcp_to')
         self.dns_primary = reader.get('vlan_networking', 'dns_primary')
 
-
     def validate(self):
         """Validate Vlan Network settings."""
         validation_errors = []
@@ -994,9 +994,9 @@ class VlanNetworkSettings(FeatureSettings):
             validation_errors.append(
                 'both or none of "dhcp_from", "dhcp_to" parameters '
                 'must be specified')
-            if self.dhcp_ipam and self.dhcp_ipam not in ['Internal DB', 'DHCP']:
-                validation_errors.append(
-                    '[vlan_networking] "dhcp_ipam" must be one of "Internal DB" or "DHCP"')
+        if self.dhcp_ipam and self.dhcp_ipam not in ['Internal DB', 'DHCP']:
+            validation_errors.append(
+                '[vlan_networking] "dhcp_ipam" must be one of "Internal DB" or "DHCP"')
         ignored = ['bridge', 'network', 'dhcp_ipam', 'dhcp_from', 'dhcp_to', 'dns_primary']
         if not all(value for (key, value) in vars(self).items() if key not in ignored):
             validation_errors.append(
