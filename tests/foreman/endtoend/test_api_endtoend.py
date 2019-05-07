@@ -1125,7 +1125,14 @@ def test_e2e_phase_1(state):
     with optional_step('create_subnet') as create_subnet:
         subnet_name = gen_string('alpha')
         capsule = entities.SmartProxy(id=1)
-        dom = entities.Domain(id=1).read()
+        doms = entities.Domain().search(
+            query={"search": "name={0}".format(settings.vlan_networking.dns_zone)}
+        )
+        assert(
+            len(doms) > 0,
+            'API expected to return exactly 1 matching domain'
+        )
+        dom = doms[0]
         dom.organization = [org]
         dom.location = [loc]
         dom.dns = capsule
@@ -1410,7 +1417,7 @@ def test_e2e_phase_2(state, foreman_only):
             provider='libvirt',
             set_console_password=False,
             display_type='vnc',
-            url='qemu+tcp://%s/system' % cr_hostname,
+            url='qemu+tcp://{0}/system'.format(cr_hostname),
         ).create(create_missing=False)
         state['org'] = state['org'].read()
         state['loc'] = state['loc'].read()
@@ -1618,8 +1625,7 @@ def test_e2e_phase_4(state, foreman_only, rex):
         assert len(templates) > 0, 'API returned 0 command job templates'
         template = templates[0].read()
 
-        # FIXME - creating of job invocations with nailgun is not yet
-        # supported, using hammer instead
+        # FIXME - creating of job invocations with nailgun is not yet supported, using hammer instead
         invocation_command = make_job_invocation({
             'job-template': template.name,
             'inputs': 'command="ls"',
