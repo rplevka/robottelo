@@ -164,6 +164,33 @@ class AssertApiNotRaisesContextManager(_AssertNotRaisesContext):
         )
 
 
+import pytest
+class TestCasePytest:
+    @pytest.fixture(autouse=True, scope='class')
+    def _set_cls_logger(self, robottelo_logger):
+        self.logger = robottelo_logger
+
+    @pytest.fixture(scope='class')
+    def stpCls(self):
+        self.logger.info('Started setUpClass: {0}::{1}'.format(
+            self.__module__, self.__class__.__name__))
+        yield
+        self.logger.info('Finished tearDownClass: {0}::{1}'.format(
+            self.__module__, self.__class__.__name__))
+
+    @pytest.fixture(scope='function')
+    def stp(self):
+        self.logger.info('Started setUp: {0}::{1}'.format(
+            self.__module__, self.__class__.__name__))
+        yield
+        self.logger.info('Finishedu tearDown: {0}::{1}'.format(
+            self.__module__, self.__class__.__name__))
+
+
+    @pytest.fixture(autouse=True, scope='function')
+    def _set_logger(self, robottelo_logger):
+        self.logger = robottelo_logger
+
 class TestCase(unittest2.TestCase):
     """Robottelo test case"""
 
@@ -176,7 +203,7 @@ class TestCase(unittest2.TestCase):
         if not settings.configured:
             settings.configure()
         cls.logger = logging.getLogger('robottelo')
-        cls.logger.info('Started setUpClass: {0}/{1}'.format(
+        cls.logger.info('Started setUpClass: {0}::{1}'.format(
             cls.__module__, cls.__name__))
         # NOTE: longMessage defaults to True in Python 3.1 and above
         cls.longMessage = True
@@ -185,7 +212,7 @@ class TestCase(unittest2.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.logger.info('Started tearDownClass: {0}/{1}'.format(
+        cls.logger.info('Started tearDownClass: {0}::{1}'.format(
             cls.__module__, cls.__name__))
 
     @classmethod
@@ -278,7 +305,7 @@ class TestCase(unittest2.TestCase):
             callableObj(*args, **kwargs)
 
 
-class APITestCase(TestCase):
+class APITestCase(TestCasePytest):
     """Test case for API tests."""
     _default_interface = INTERFACE_API
     _default_notraises_value_handler = APINotRaisesValueHandler

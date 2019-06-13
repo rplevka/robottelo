@@ -14,6 +14,7 @@
 
 :Upstream: No
 """
+import pytest
 from fauxfactory import gen_integer, gen_string
 from nailgun import client, entities
 from requests.exceptions import HTTPError
@@ -39,6 +40,7 @@ from robottelo import manifests
 from robottelo.api.utils import enable_rhrepo_and_fetchid, upload_manifest
 from robottelo.helpers import get_nailgun_config
 from robottelo.test import APITestCase
+from robottelo.test import TestCasePytest
 from six.moves import http_client
 
 
@@ -52,6 +54,32 @@ def _good_max_hosts():
 def _bad_max_hosts():
     """Return a list of invalid ``max_hosts`` values."""
     return [gen_integer(-100, -1), 0, gen_string('alpha')]
+
+
+class TestMyPytestCase(TestCasePytest):
+    @pytest.fixture(scope='class', autouse=True)
+    def setUpClass(self, stpCls):
+        self.logger.debug('these are logs produced during setupclass routine')
+        yield
+        self.logger.debug('these are logs produced during teardownclass routine')
+
+    @pytest.fixture(scope='function', autouse=True)
+    def setUp(self, stp):
+        self.logger.debug('these are logs produced during test setup routine')
+        yield
+        self.logger.debug('these are logs produced during test teardown routine')
+        self.a = 1
+
+    def test_pytest(self):
+        self.logger.debug('1 log from test #1')
+        self.logger.info('2 log from test #1')
+        self.logger.warn('3 log from test #1')
+        self.logger.info(self.a)
+
+    def test_pytest_2(self):
+        self.logger.debug('1 log from test #2')
+        self.logger.info('2 log from test #2')
+        self.logger.warn('3 log from test #2')
 
 
 class ActivationKeyTestCase(APITestCase):
@@ -554,10 +582,10 @@ class ActivationKeyTestCase(APITestCase):
 class ActivationKeySearchTestCase(APITestCase):
     """Tests that search for activation keys."""
 
-    @classmethod
+    @pytest.fixture(scope='class', autouse=True)
     def setUpClass(cls):
         """Create an organization and an activation key belonging to it."""
-        super(ActivationKeySearchTestCase, cls).setUpClass()
+        #super(ActivationKeySearchTestCase, cls).setUpClass()
         cls.org = entities.Organization().create()
         cls.act_key = entities.ActivationKey(organization=cls.org).create()
         if rm_bug_is_open(4638):

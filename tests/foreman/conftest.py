@@ -109,16 +109,6 @@ def robottelo_logger(request, worker_id):
     return logger
 
 
-@pytest.fixture(autouse=True)
-def log_test_execution(robottelo_logger, request):
-    test_name = request.node.name
-    parent_name = request.node.parent.name
-    test_full_name = '{}/{}'.format(parent_name, test_name)
-    robottelo_logger.debug('Started Test: {}'.format(test_full_name))
-    yield None
-    robottelo_logger.debug('Finished Test: {}'.format(test_full_name))
-
-
 class NestedDict(SimpleNamespace):
     def __init__(self, dict_data, **kwargs):
         super().__init__(**kwargs)
@@ -185,3 +175,11 @@ def pytest_collection_modifyitems(items, config):
 def record_test_timestamp_xml(record_property):
     now = datetime.datetime.utcnow()
     record_property("start_time", now.strftime("%Y-%m-%dT%H:%M:%S"))
+
+def pytest_runtest_call(item):
+    log('Started Test: {0}::{1}::{2}'.format(item.module.__name__, item.cls.__name__,
+                                             item.function.__name__), 'INFO')
+
+def pytest_runtest_teardown(item):
+    log('Finished Test: {0}::{1}::{2}'.format(item.module.__name__, item.cls.__name__,
+                                             item.function.__name__), 'INFO')
